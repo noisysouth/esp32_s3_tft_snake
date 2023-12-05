@@ -18,6 +18,7 @@
 #include <Adafruit_ST7789.h> // Hardware-specific library for ST7789
 #include <SPI.h>
 #include <Wire.h> // for i2c keyboard
+#include "Adafruit_seesaw.h"
 
 //#define DEBUG_BUTTONS
 //#define DEBUG_MOVING
@@ -38,6 +39,17 @@ Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 #define CELLS_Y (PIXELS_Y/CELL_PIXELS)
 //#define MAX_SEGMENTS 100
 #define MAX_SEGMENTS 999
+
+Adafruit_seesaw ss;
+#define BUTTON_X         6
+#define BUTTON_Y         2
+#define BUTTON_A         5
+#define BUTTON_B         1
+#define BUTTON_SELECT    0
+#define BUTTON_START    16
+uint32_t button_mask = (1UL << BUTTON_X) | (1UL << BUTTON_Y) | (1UL << BUTTON_START) |
+                       (1UL << BUTTON_A) | (1UL << BUTTON_B) | (1UL << BUTTON_SELECT);
+//#define IRQ_PIN   5
 
 #define COS30 0.866 // cos (30 degrees)
 #define SIN30 0.6   // sin (30 degrees)
@@ -526,6 +538,27 @@ void setup(void) {
 
   Wire.begin();        // join i2c bus (address optional for master)
 
+  if(!ss.begin(0x50)){
+    Serial.println("ERROR! seesaw not found");
+  } else {
+    Serial.println("seesaw started");
+
+    uint32_t version = ((ss.getVersion() >> 16) & 0xFFFF);
+    if (version != 5743) {
+      Serial.print("Wrong firmware loaded? ");
+      Serial.println(version);
+      while(1) delay(10);
+    }
+    Serial.println("Found Product 5743");
+    
+    ss.pinModeBulk(button_mask, INPUT_PULLUP);
+    ss.setGPIOInterrupts(button_mask, 1);
+
+  #if defined(IRQ_PIN)
+    pinMode(IRQ_PIN, INPUT);
+  #endif
+  }
+  
   Serial.println(time, DEC);
   draw_banner (color_intro1);
   //start_sound (sound_intro1);
@@ -545,6 +578,7 @@ void setup(void) {
 #define MIN_PRINTABLE ' '
 #define MAX_PRINTABLE '~'
 
+int last_x = 0, last_y = 0; // old joystick position
 void loop() {
   float x_move;
   float y_move;
@@ -607,6 +641,48 @@ void loop() {
   Serial.println();
 #endif
 
+  // Reverse x/y values to match joystick orientation
+  int joy_x = 1023 - ss.analogRead(14);
+  int joy_y = 1023 - ss.analogRead(15);
+  
+  if ( (abs(joy_x - last_x) > 3)  ||  (abs(joy_y - last_y) > 3)) {
+    Serial.print("joy_x: "); Serial.print(joy_x); Serial.print(", "); Serial.print("joy_y: "); Serial.println(joy_y);
+    last_x = joy_x;
+    last_y = joy_y;
+  }
+  // X joystick axis: be more sensitive, as it is harder to push
+  if (joy_x < 400) {
+    x_move = -1;
+  }
+  if (joy_x > 600) {
+    x_move = 1;
+  }
+  // Y joystick axis: be less sensitive, as it is so easy to push (don't override X motions)
+  if (joy_y < 128) {
+    y_move = 1;
+  }
+  if (joy_y > 900) {
+    y_move = -1;
+  }
+#if defined(IRQ_PIN)
+  if(!digitalRead(IRQ_PIN)) {
+    return;
+  }
+#endif
+
+  uint32_t buttons = ss.digitalReadBulk(button_mask);
+  if (! (buttons & (1UL << BUTTON_X))) {
+    y_move = -1;
+  }
+  if (! (buttons & (1UL << BUTTON_B))) {
+    y_move = 1;
+  }
+  if (! (buttons & (1UL << BUTTON_Y))) {
+    x_move = -1;
+  }
+  if (! (buttons & (1UL << BUTTON_A))) {
+    x_move = 1;
+  }
 #if 0
   if (left_btn && !left_old) {
     worm_cells[0].img = worm_cells[0].img-1;
@@ -624,16 +700,21 @@ void loop() {
 
   // face the direction that was tilted the fastest,
   //  or if none tilted fast, the way we are most tilted.
-  if (x_move > 0) {
+  int old_dir = worm_cells[0].img;
+  if ((x_move > 0) &&
+      (old_dir != dir_east)) {
     worm_cells[0].img = dir_east;
   }
-  if (x_move < 0) {
+  if ((x_move < 0) &&
+      (old_dir != dir_west)) {
     worm_cells[0].img = dir_west;
   }
-  if (y_move > 0) {
+  if ((y_move > 0) &&
+      (old_dir != dir_south)) {
     worm_cells[0].img = dir_south;
   }
-  if (y_move < 0) {
+  if ((y_move < 0) &&
+      (old_dir != dir_north)) {
     worm_cells[0].img = dir_north;
   }
 
